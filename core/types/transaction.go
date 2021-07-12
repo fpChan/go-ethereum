@@ -19,7 +19,9 @@ package types
 import (
 	"bytes"
 	"container/heap"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"sync/atomic"
@@ -57,6 +59,10 @@ type Transaction struct {
 
 // NewTx creates a new transaction.
 func NewTx(inner TxData) *Transaction {
+	bs, _ := json.Marshal(inner)
+	var out bytes.Buffer
+	_ = json.Indent(&out, bs, "", "\t")
+	fmt.Printf("inner=%v\n", out.String())
 	tx := new(Transaction)
 	tx.setDecoded(inner.copy(), 0)
 	return tx

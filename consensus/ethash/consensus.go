@@ -329,12 +329,12 @@ func CalcDifficulty(config *params.ChainConfig, time uint64, parent *types.Heade
 		return calcDifficultyEip2384(time, parent)
 	case config.IsConstantinople(next):
 		return calcDifficultyConstantinople(time, parent)
-	case config.IsByzantium(next):
+	case config.IsByzantium(next): // 拜占庭 2017-10-16 加密算法扩增、难度炸弹延后、挖矿奖励减少
 		return calcDifficultyByzantium(time, parent)
-	case config.IsHomestead(next):
+	case config.IsHomestead(next): // 这个是主要版本，POW，主网使用
 		return calcDifficultyHomestead(time, parent)
 	default:
-		return calcDifficultyFrontier(time, parent)
+		return calcDifficultyFrontier(time, parent) // Frontier 第一个版本，2015年7月30日启动
 	}
 }
 
@@ -448,6 +448,55 @@ func calcDifficultyHomestead(time uint64, parent *types.Header) *big.Int {
 	}
 	// for the exponential factor
 	periodCount := new(big.Int).Add(parent.Number, big1)
+	periodCount.Div(periodCount, expDiffPeriod)
+
+	// the exponential factor, commonly referred to as "the bomb"
+	// diff = diff + 2^(periodCount - 2)
+	if periodCount.Cmp(big1) > 0 {
+		y.Sub(periodCount, big2)
+		y.Exp(big2, y, nil)
+		x.Add(x, y)
+	}
+	return x
+}
+
+// calcDifficultyHomesteadByRealNumber 用数据计算一下, 主要参数如下
+// parent_timestamp：上一个区块产生的时间 parent_diff：上一个区块的难度
+// time：当前区块产生的时间  block_number：当前区块的序号
+func calcDifficultyHomesteadByRealNumber(time, parentTime uint64, parentDiff, parentNum *big.Int) *big.Int {
+	// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-2.md
+	// algorithm:
+	// diff = (parent_diff +
+	//         (parent_diff / 2048 * max(1 - (block_timestamp - parent_timestamp) // 10, -99))
+	//        ) + 2^(periodCount - 2)
+
+	bigTime := new(big.Int).SetUint64(time)
+	bigParentTime := new(big.Int).SetUint64(parentTime)
+
+	// holds intermediate values to make the algo easier to read & audit
+	x := new(big.Int)
+	y := new(big.Int)
+
+	// 1 - (block_timestamp - parent_timestamp) // 10
+	x.Sub(bigTime, bigParentTime)
+	x.Div(x, big10)
+	x.Sub(big1, x)
+
+	// max(1 - (block_timestamp - parent_timestamp) // 10, -99)
+	if x.Cmp(bigMinus99) < 0 {
+		x.Set(bigMinus99)
+	}
+	// (parent_diff + parent_diff // 2048 * max(1 - (block_timestamp - parent_timestamp) // 10, -99))
+	y.Div(parentDiff, params.DifficultyBoundDivisor)
+	x.Mul(y, x)
+	x.Add(parentDiff, x)
+
+	// minimum difficulty can ever be (before exponential factor)
+	if x.Cmp(params.MinimumDifficulty) < 0 {
+		x.Set(params.MinimumDifficulty)
+	}
+	// for the exponential factor
+	periodCount := new(big.Int).Add(parentNum, big1)
 	periodCount.Div(periodCount, expDiffPeriod)
 
 	// the exponential factor, commonly referred to as "the bomb"

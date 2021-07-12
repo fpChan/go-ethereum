@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"encoding/hex"
+	"fmt"
 	"io/ioutil"
 	"math/big"
 	"os"
@@ -297,4 +298,11 @@ func TestPythonIntegration(t *testing.T) {
 
 	t.Logf("msg: %x, privkey: %s sig: %x\n", msg0, kh, sig0)
 	t.Logf("msg: %x, privkey: %s sig: %x\n", msg1, kh, sig1)
+}
+
+// TestAccount 测试提前预生成ETH 合约地址
+func TestAccount(t *testing.T) {
+	addr := common.HexToAddress("b715f8449fba5b331fed2b86ce11768edca10be0")
+	contract := CreateAddress(addr, 14)
+	fmt.Printf("contract address is %s", contract.Hex())
 }

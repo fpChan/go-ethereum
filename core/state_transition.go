@@ -209,6 +209,25 @@ func (st *StateTransition) preCheck() error {
 	return st.buyGas()
 }
 
+/*
+The State Transitioning Model 状态转换模型
+
+A state transition is a change made when a transaction is applied to the current world state
+The state transitioning model does all the necessary work to work out a valid new state root.
+状态转换是将事务应用到当前世界状态(world state)时所做的更改。状态转换模型执行所有必要的工作，以计算出一个有效的新状态根。
+
+1) Nonce handling 处理Nonce
+2) Pre pay gas  提前支付gas
+3) Create a new state object if the recipient is \0*32  如果接收方是\0*32，则创建一个新的stateObject
+4) Value transfer 价值转移
+== If contract creation 如果是合约创建 ==
+  4a) Attempt to run transaction data  尝试运行事务数据
+  4b) If valid, use result as code for the new state object 如果有效，则使用result作为新stateObject的代码
+== end ==
+5) Run Script section 运行脚本部分
+6) Derive new state root 导出新状态根
+*/
+
 // TransitionDb will transition the state by applying the current message and
 // returning the evm execution result with following fields.
 //
@@ -244,6 +263,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	contractCreation := msg.To() == nil
 
 	// Check clauses 4-5, subtract intrinsic gas if everything is correct
+	// 支付固定gas
 	gas, err := IntrinsicGas(st.data, st.msg.AccessList(), contractCreation, homestead, istanbul)
 	if err != nil {
 		return nil, err
@@ -267,12 +287,14 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		vmerr error // vm errors do not effect consensus and are therefore not assigned to err
 	)
 	if contractCreation {
+		// 调用evm.Create创建合约
 		ret, _, st.gas, vmerr = st.evm.Create(sender, st.data, st.gas, st.value)
 	} else {
 		// Increment the nonce for the next transaction
 		st.state.SetNonce(msg.From(), st.state.GetNonce(sender.Address())+1)
 		ret, st.gas, vmerr = st.evm.Call(sender, st.to(), st.data, st.gas, st.value)
 	}
+	// 返还gas，并将已消耗的 gas 计入矿工账户中
 	st.refundGas()
 	st.state.AddBalance(st.evm.Context.Coinbase, new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice))
 

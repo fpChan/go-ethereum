@@ -337,37 +337,43 @@ func generateDataset(dest []uint32, epoch uint64, cache []uint32) {
 // value for a particular header hash and nonce.
 func hashimoto(hash []byte, nonce uint64, size uint64, lookup func(index uint32) []uint32) ([]byte, []byte) {
 	// Calculate the number of theoretical rows (we use one buffer nonetheless)
+	// 计算数据集的理论行数
 	rows := uint32(size / mixBytes)
 
+	// 将header+nonce合并成一个40字节的seed
 	// Combine header+nonce into a 64 byte seed
 	seed := make([]byte, 40)
 	copy(seed, hash)
 	binary.LittleEndian.PutUint64(seed[32:], nonce)
 
+	// 经历一遍Keccak512加密，生成64字节的seed 从seed中获取seedHead用于后面数据集的lookup
 	seed = crypto.Keccak512(seed)
 	seedHead := binary.LittleEndian.Uint32(seed)
 
-	// Start the mix with replicated seed
-	mix := make([]uint32, mixBytes/4)
+	// Start the mix with replicated seed 	// 开始重复混合seed
+	mix := make([]uint32, mixBytes/4) // mixBytes常量= 128，mix的长度为32，元素为uint32，是32位，对应为4字节大小。所以mix总共大小为4*32=128字节大小
 	for i := 0; i < len(mix); i++ {
-		mix[i] = binary.LittleEndian.Uint32(seed[i%16*4:])
+		mix[i] = binary.LittleEndian.Uint32(seed[i%16*4:]) // 共循环32次，前16和后16位的元素值相同
 	}
 	// Mix in random dataset nodes
-	temp := make([]uint32, len(mix))
+	// 再与随机的dataset做混合
+	temp := make([]uint32, len(mix)) // 新建一个temp，结构与mix相同
 
 	for i := 0; i < loopAccesses; i++ {
 		parent := fnv(uint32(i)^seedHead, mix[i%len(mix)]) % rows
 		for j := uint32(0); j < mixBytes/hashBytes; j++ {
-			copy(temp[j*hashWords:], lookup(2*parent+j))
+			copy(temp[j*hashWords:], lookup(2*parent+j)) // 通过seed生成parent，再基于parent去源数据中查找数据子集，最后复制到temp中
 		}
-		fnvHash(mix, temp)
+		fnvHash(mix, temp) // 对mix和temp进行fnvHash处理
 	}
-	// Compress mix
+	// Compress mix 	// 压缩mix，先对mix进行一次大混淆，然后去最前面8个有效位置的数据
 	for i := 0; i < len(mix); i += 4 {
 		mix[i/4] = fnv(fnv(fnv(mix[i], mix[i+1]), mix[i+2]), mix[i+3])
 	}
 	mix = mix[:len(mix)/4]
 
+	// 最后得到digest，并基于seed+digest得到我们想要的值，如果这个值小于target，就结束循环
+	// 这里的digest就是我们要的区块最终的hash
 	digest := make([]byte, common.HashLength)
 	for i, val := range mix {
 		binary.LittleEndian.PutUint32(digest[i*4:], val)

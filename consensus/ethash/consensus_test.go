@@ -19,11 +19,13 @@ package ethash
 import (
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
@@ -185,4 +187,32 @@ func BenchmarkDifficultyCalculator(b *testing.B) {
 			x2(1000014, h)
 		}
 	})
+}
+
+func TestRealDifficulty(t *testing.T) {
+	layout := "01/02/2006 3:04:05 PM"
+	// 通过块高 12614783 计算 12614784 的难度
+	//parentDiff := new(big.Int).SetUint64(7536507553816541);
+	//parentTimeStamp, err := time.Parse(layout, "06/11/2021 06:13:12 PM")
+	//currentTimeStamp, err := time.Parse(layout, "06/11/2021 06:13:13 PM")
+	//if err != nil {
+	//	fmt.Println(err)
+	//}
+	//parentTime := parentTimeStamp.Unix();
+	//parentNum := new(big.Int).SetUint64(12614784)
+	//blockTime := currentTimeStamp.Unix()
+
+	parentDiff := new(big.Int).SetUint64(2117963098883076)
+	parentTimeStamp, err := time.Parse(layout, "08/28/2017 09:24:23 AM")
+	currentTimeStamp, err := time.Parse(layout, "08/28/2017 09:25:43 AM")
+	if err != nil {
+		fmt.Println(err)
+	}
+	parentTime := parentTimeStamp.Unix()
+	parentNum := new(big.Int).SetUint64(4212372)
+	blockTime := currentTimeStamp.Unix()
+
+	currentDiff := calcDifficultyHomesteadByRealNumber(uint64(blockTime), uint64(parentTime), parentDiff, parentNum)
+	fmt.Printf("parent time %d. current time %d. calc difficulty is %d.", parentTime, blockTime, currentDiff)
+
 }

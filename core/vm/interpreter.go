@@ -133,10 +133,11 @@ func NewEVMInterpreter(evm *EVM, cfg Config) *EVMInterpreter {
 
 // Run loops and evaluates the contract's code with the given input data and returns
 // the return byte-slice and an error if one occurred.
-//
+//// 用给定的入参循环执行合约的代码，并返回返回结果的字节切片，如果出现错误的话返回错误。
 // It's important to note that any errors returned by the interpreter should be
 // considered a revert-and-consume-all-gas operation except for
 // ErrExecutionReverted which means revert-and-keep-gas-left.
+// 应该注意的是，除了errExecutionReverted错误表示回滚状态但保留gas以外，解释器返回的任何错误应该会导致状态回滚并消耗掉所有gas。
 func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (ret []byte, err error) {
 
 	// Increment the call depth which is restricted to 1024
@@ -152,17 +153,19 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 
 	// Reset the previous call's return data. It's unimportant to preserve the old buffer
 	// as every returning call will return new data anyway.
+	// 重置前一个调用的返回数据。保留旧的缓冲区并不重要，因为每次返回调用都会返回新的数据。
 	in.returnData = nil
 
 	// Don't bother with the execution if there's no code.
+	// 如果没有代码，就不用执行。直接返回
 	if len(contract.Code) == 0 {
 		return nil, nil
 	}
 
 	var (
-		op          OpCode        // current opcode
-		mem         = NewMemory() // bound memory
-		stack       = newstack()  // local stack
+		op          OpCode        // current opcode 当前指令
+		mem         = NewMemory() // bound memory 绑定内存
+		stack       = newstack()  // local stack 本地堆栈
 		callContext = &ScopeContext{
 			Memory:   mem,
 			Stack:    stack,
@@ -171,13 +174,15 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		// For optimisation reason we're using uint64 as the program counter.
 		// It's theoretically possible to go above 2^64. The YP defines the PC
 		// to be uint256. Practically much less so feasible.
+		// 出于优化的原因，我们使用uint64作为程序计数器。理论上有可能超过2^64。
+		// YP将PC定义为uint256。实际上不太可行。
 		pc   = uint64(0) // program counter
 		cost uint64
 		// copies used by tracer
-		pcCopy  uint64 // needed for the deferred Tracer
-		gasCopy uint64 // for Tracer to log gas remaining before execution
-		logged  bool   // deferred Tracer should ignore already logged steps
-		res     []byte // result of the opcode execution function
+		pcCopy  uint64 // needed for the deferred Tracer 延迟的跟踪程序需要此字段
+		gasCopy uint64 // for Tracer to log gas remaining before execution 用于跟踪程序记录执行前剩余的gas
+		logged  bool   // deferred Tracer should ignore already logged steps 延迟跟踪程序应忽略已记录的步骤
+		res     []byte // result of the opcode execution function 指令执行函数的结果
 	)
 	// Don't move this deferrred function, it's placed before the capturestate-deferred method,
 	// so that it get's executed _after_: the capturestate needs the stacks before
@@ -202,6 +207,8 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 	// explicit STOP, RETURN or SELFDESTRUCT is executed, an error occurred during
 	// the execution of one of the operations or until the done flag is set by the
 	// parent context.
+	// 解释器的主循环。解释器的主要循环， 直到遇到STOP，RETURN，SELFDESTRUCT指令被执行，
+	// 或者是遇到任意错误，或者父上下文设置了done标志。
 	steps := 0
 	for {
 		steps++
@@ -215,6 +222,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 
 		// Get the operation from the jump table and validate the stack to ensure there are
 		// enough stack items available to perform the operation.
+		// 从指令表拿到对应的operation，并验证堆栈，以确保有足够的堆栈项可用于执行操作。
 		op = contract.GetOp(pc)
 		operation := in.cfg.JumpTable[op]
 		if operation == nil {
@@ -238,16 +246,19 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 			}
 		}
 		// Static portion of gas
-		cost = operation.constantGas // For tracing
-		if !contract.UseGas(operation.constantGas) {
+		cost = operation.constantGas                 // For tracing  用于跟踪程序
+		if !contract.UseGas(operation.constantGas) { // 先扣掉固定gas
 			return nil, ErrOutOfGas
 		}
 
 		var memorySize uint64
+		// 如果将要执行的指令需要用到内存存储空间，则计算所需要的空间大小
 		// calculate the new memory size and expand the memory to fit
 		// the operation
 		// Memory check needs to be done prior to evaluating the dynamic gas portion,
 		// to detect calculation overflows
+		// 计算新的内存大小并扩展内存以适应该指令。在评估动态气体部分之前，需要进行内存检查，以检测计算溢位。
+		// 计算内存使用量
 		if operation.memorySize != nil {
 			memSize, overflow := operation.memorySize(stack)
 			if overflow {
@@ -280,9 +291,11 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		}
 
 		// execute the operation
+		// 执行指令，调用指令对应的执行函数
 		res, err = operation.execute(&pc, in, callContext)
 		// if the operation clears the return data (e.g. it has returning data)
 		// set the last return to the result of the operation.
+		// 如果有返回值，那么就设置返回值。 只有最后一个返回有效。
 		if operation.returns {
 			in.returnData = common.CopyBytes(res)
 		}

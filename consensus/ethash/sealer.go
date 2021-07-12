@@ -48,6 +48,9 @@ var (
 
 // Seal implements consensus.Engine, attempting to find a nonce that satisfies
 // the block's difficulty requirements.
+//1、获得种子seed；
+//2、基于seed获得Rand对象，rand 值将作为初始化nonce进行挖矿；
+//3、启动mine函数，执行挖矿
 func (ethash *Ethash) Seal(chain consensus.ChainHeaderReader, block *types.Block, results chan<- *types.Block, stop <-chan struct{}) error {
 	// If we're running a fake PoW, simply return a 0 nonce immediately
 	if ethash.config.PowMode == ModeFake || ethash.config.PowMode == ModeFullFake {
@@ -68,13 +71,16 @@ func (ethash *Ethash) Seal(chain consensus.ChainHeaderReader, block *types.Block
 	abort := make(chan struct{})
 
 	ethash.lock.Lock()
+	// 挖矿的线程数量
 	threads := ethash.threads
 	if ethash.rand == nil {
+		// 获得种子seed
 		seed, err := crand.Int(crand.Reader, big.NewInt(math.MaxInt64))
 		if err != nil {
 			ethash.lock.Unlock()
 			return err
 		}
+		// 执行成功，生成rand对象，并赋值
 		ethash.rand = rand.New(rand.NewSource(seed.Int64()))
 	}
 	ethash.lock.Unlock()
@@ -129,6 +135,11 @@ func (ethash *Ethash) Seal(chain consensus.ChainHeaderReader, block *types.Block
 
 // mine is the actual proof-of-work miner that searches for a nonce starting from
 // seed that results in correct final block difficulty.
+//1、取出block的header；
+//2、取出没有nonce时的区块hash；
+//3、设置目标target，即上面公式中的M/td；
+//4、获得dataset，即数据集
+//5、开启无限循环，计算每一轮nonce值的POW结果，知道获得正确解。
 func (ethash *Ethash) mine(block *types.Block, id int, seed uint64, abort chan struct{}, found chan *types.Block) {
 	// Extract some data from the header
 	var (
@@ -164,6 +175,7 @@ search:
 			// Compute the PoW value of this nonce
 			digest, result := hashimotoFull(dataset.dataset, hash, nonce)
 			if new(big.Int).SetBytes(result).Cmp(target) <= 0 {
+				// 找到nonce后重构header，更新nonce和hash
 				// Correct nonce found, create a new header with it
 				header = types.CopyHeader(header)
 				header.Nonce = types.EncodeNonce(nonce)

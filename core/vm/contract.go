@@ -46,9 +46,9 @@ type Contract struct {
 	// CallerAddress is the result of the caller which initialised this
 	// contract. However when the "call method" is delegated this value
 	// needs to be initialised to that of the caller's caller.
-	CallerAddress common.Address
-	caller        ContractRef
-	self          ContractRef
+	CallerAddress common.Address // 调用地址
+	caller        ContractRef    // 调用地址
+	self          ContractRef    // 合约地址
 
 	jumpdests map[common.Hash]bitvec // Aggregated result of JUMPDEST analysis.
 	analysis  bitvec                 // Locally cached result of JUMPDEST analysis

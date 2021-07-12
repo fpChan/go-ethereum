@@ -84,6 +84,7 @@ func New(eth Backend, config *Config, chainConfig *params.ChainConfig, mux *even
 // It's entered once and as soon as `Done` or `Failed` has been broadcasted the events are unregistered and
 // the loop is exited. This to prevent a major security vuln where external parties can DOS you with blocks
 // and halt your mining operation for as long as the DOS continues.
+// miner.update()方法监听downloader事件，控制着canStart和shouldStart这两个开关，用于抵挡DOS攻击。
 func (miner *Miner) update() {
 	events := miner.mux.Subscribe(downloader.StartEvent{}, downloader.DoneEvent{}, downloader.FailedEvent{})
 	defer func() {
@@ -91,7 +92,8 @@ func (miner *Miner) update() {
 			events.Unsubscribe()
 		}
 	}()
-
+	// 当监听到downloader的DoneEvent事件或者FailedEvent事件，判断shouldStart是否打开。
+	// 如果是打开的，则再打开canStart，将shouldStart关闭。此时，将挖矿的控制权完全交给miner.Start()方法。
 	shouldStart := false
 	canStart := true
 	dlEventCh := events.Chan()
@@ -107,8 +109,8 @@ func (miner *Miner) update() {
 			case downloader.StartEvent:
 				wasMining := miner.Mining()
 				miner.worker.stop()
-				canStart = false
-				if wasMining {
+				canStart = false // 当监听到downloader的StartEvent事件时，canStart设置为0，表示downloader同步时不可进行挖矿
+				if wasMining {   // 	如果正在挖矿（miner.mining == ture），停止挖矿，同时将shouldStart设置为1，以便下次直接开始挖矿；
 					// Resume mining after sync was finished
 					shouldStart = true
 					log.Info("Mining aborted due to sync")

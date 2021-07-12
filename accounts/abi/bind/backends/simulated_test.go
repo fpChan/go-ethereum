@@ -671,6 +671,7 @@ func TestSimulatedBackend_TransactionCount(t *testing.T) {
 
 	// create a signed transaction to send
 	tx := types.NewTransaction(uint64(0), testAddr, big.NewInt(1000), params.TxGas, big.NewInt(1), nil)
+
 	signedTx, err := types.SignTx(tx, types.HomesteadSigner{}, testKey)
 	if err != nil {
 		t.Errorf("could not sign tx: %v", err)

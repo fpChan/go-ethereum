@@ -332,7 +332,10 @@ func recalcRecommit(minRecommit, prev time.Duration, target float64, inc bool) t
 	return time.Duration(int64(next))
 }
 
-// newWorkLoop is a standalone goroutine to submit new mining work upon received events.
+// newWorkLoop 主要监听两个重要的通道，一个是startCh通道，一个是chainHeadCh，
+// 这两个通道均用于清理特定父区块的pending tasks列表，然后递交基于父区块的挖矿task）。
+// 区别在于startCh通道启动是基于当前的currentBlock，而chainHeadCh是基于新传来的区块头。
+//  is a standalone goroutine to submit new mining work upon received events.
 func (w *worker) newWorkLoop(recommit time.Duration) {
 	var (
 		interrupt   *int32
@@ -362,7 +365,7 @@ func (w *worker) newWorkLoop(recommit time.Duration) {
 	clearPending := func(number uint64) {
 		w.pendingMu.Lock()
 		for h, t := range w.pendingTasks {
-			if t.block.NumberU64()+staleThreshold <= number {
+			if t.block.NumberU64()+staleThreshold <= number { // 如果当前 任务队列中维护的 block 区块高度 + 7 < 指定块高，说明落后太多了
 				delete(w.pendingTasks, h)
 			}
 		}
@@ -437,28 +440,30 @@ func (w *worker) mainLoop() {
 
 	for {
 		select {
+		// task1：直接启动commitNewWork，进一步递交挖矿task
 		case req := <-w.newWorkCh:
 			w.commitNewWork(req.interrupt, req.noempty, req.timestamp)
 
+		// task2：出现分叉后，处理叔块
 		case ev := <-w.chainSideCh:
-			// Short circuit for duplicate side blocks
-			if _, exist := w.localUncles[ev.Block.Hash()]; exist {
+			// Short circuit for duplicate side blocks // 检验该hash的区块是否已经存在当做潜在叔块，如果是，则忽略
+			if _, exist := w.localUncles[ev.Block.Hash()]; exist { // 本地分叉区块作为潜在叔块，查看是否存在这个块
 				continue
 			}
-			if _, exist := w.remoteUncles[ev.Block.Hash()]; exist {
+			if _, exist := w.remoteUncles[ev.Block.Hash()]; exist { // 分叉区块作为潜在叔块，查看是否存在这个块
 				continue
 			}
-			// Add side block to possible uncle block set depending on the author.
+			// Add side block to possible uncle block set depending on the author.  // 将该区块作为潜在叔块加入叔块map，如果是 本地挖出来的，那么就存在localUncles， 不然就是其他节点挖出的叔块
 			if w.isLocalBlock != nil && w.isLocalBlock(ev.Block) {
 				w.localUncles[ev.Block.Hash()] = ev.Block
 			} else {
 				w.remoteUncles[ev.Block.Hash()] = ev.Block
 			}
-			// If our mining block contains less than 2 uncle blocks,
+			// If our mining block contains less than 2 uncle blocks,     // 如果我们正在mining的区块中 uncles 数量< 2，则添加新的uncles并重新生成mining block
 			// add the new uncle block if valid and regenerate a mining block.
 			if w.isRunning() && w.current != nil && w.current.uncles.Cardinality() < 2 {
 				start := time.Now()
-				if err := w.commitUncle(w.current, ev.Block.Header()); err == nil {
+				if err := w.commitUncle(w.current, ev.Block.Header()); err == nil { // 添加该叔块到 正要挖的区块 uncles 字段 set集合中
 					var uncles []*types.Header
 					w.current.uncles.Each(func(item interface{}) bool {
 						hash, ok := item.(common.Hash)
@@ -478,13 +483,15 @@ func (w *worker) mainLoop() {
 					w.commit(uncles, nil, true, start)
 				}
 			}
-
+		// task3：交易池更新后
 		case ev := <-w.txsCh:
 			// Apply transactions to the pending state if we're not mining.
 			//
 			// Note all transactions received may not be continuous with transactions
 			// already included in the current mining block. These transactions will
 			// be automatically eliminated.
+			// 待挖矿停止，执行该交易并更新世界状态
+			// 如果该交易与正在mining的交易不连续，因为它可能已经包含在当前挖的块里了，则直接忽略
 			if !w.isRunning() && w.current != nil {
 				// If block is already full, abort
 				if gp := w.current.gasPool; gp != nil && gp.Gas() < params.TxGas {
@@ -871,19 +878,22 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 	defer w.mu.RUnlock()
 
 	tstart := time.Now()
-	parent := w.chain.CurrentBlock()
+	parent := w.chain.CurrentBlock() // 以当前区块为 父区块，这是开始准备挖新的块
 
-	if parent.Time() >= uint64(timestamp) {
+	if parent.Time() >= uint64(timestamp) { // 如果父区块的时间比现在的时间还大，将当前时间设置为父区块时间+1
 		timestamp = int64(parent.Time() + 1)
 	}
+	// task1:初始化区块头给待挖矿的区块，调用core.CalcGasLimit方法，计算gas限额
+	// 如果 parentGasUsed > parentGasLimit * (2/3) ，那么当前区块的 gasLimit 就会增加,否则会减小，增加和减少的量取决于 parentGasUsed 距离 2/3 的parentGasLimit多远
 	num := parent.Number()
 	header := &types.Header{
 		ParentHash: parent.Hash(),
 		Number:     num.Add(num, common.Big1),
-		GasLimit:   core.CalcGasLimit(parent, w.config.GasFloor, w.config.GasCeil),
+		GasLimit:   core.CalcGasLimit(parent, w.config.GasFloor, w.config.GasCeil), // gas_limit 计算的方式
 		Extra:      w.extra,
 		Time:       uint64(timestamp),
 	}
+	// 共识引擎启动后才能设置 coinbase 地址到区块头
 	// Only set the coinbase if our consensus engine is running (avoid spurious block rewards)
 	if w.isRunning() {
 		if w.coinbase == (common.Address{}) {
@@ -892,10 +902,16 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 		}
 		header.Coinbase = w.coinbase
 	}
+	// //Prepare方法是计算当前区块所需要的难度值，即header.Difficulty，方便后续计算hash的时候做比较(pos算法精髓)
+	// 它可以根据前一个区块的难度水平和时间戳计算得到，
+	// diff = (parent_diff +
+	//         (parent_diff / 2048 * max((2 if len(parent.uncles) else 1) - ((timestamp - parent.timestamp) // 9), -99))
+	//        ) + 2^(periodCount - 2)
 	if err := w.engine.Prepare(w.chain, header); err != nil {
 		log.Error("Failed to prepare header for mining", "err", err)
 		return
 	}
+	// 检查是否有DAO硬分叉
 	// If we are care about TheDAO hard-fork check whether to override the extra-data or not
 	if daoBlock := w.chainConfig.DAOForkBlock; daoBlock != nil {
 		// Check whether the block is among the fork extra-override range
@@ -909,17 +925,20 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 			}
 		}
 	}
+	// task2：设置当前任务的environment，其中获取了7个ancestors和与之直接相连的familily
 	// Could potentially happen if starting to mine in an odd state.
 	err := w.makeCurrent(parent, header)
 	if err != nil {
 		log.Error("Failed to create mining context", "err", err)
 		return
 	}
+	// 创建当前work task
 	// Create the current work task and check any fork transitions needed
 	env := w.current
 	if w.chainConfig.DAOForkSupport && w.chainConfig.DAOForkBlock != nil && w.chainConfig.DAOForkBlock.Cmp(header.Number) == 0 {
 		misc.ApplyDAOHardFork(env.state)
 	}
+	// task3：添加两个叔块到当前mining block中
 	// Accumulate the uncles for the current block
 	uncles := make([]*types.Header, 0, 2)
 	commitUncles := func(blocks map[common.Hash]*types.Block) {
@@ -941,22 +960,27 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 			}
 		}
 	}
+	// 优先选择本地叔块
 	// Prefer to locally generated uncle
 	commitUncles(w.localUncles)
 	commitUncles(w.remoteUncles)
 
+	// 如果noempty参数为false，根据临时复制状态创建一个空块，以便在不等待块执行完成的情况下提前创建block
 	// Create an empty block based on temporary copied state for
 	// sealing in advance without waiting block execution finished.
 	if !noempty && atomic.LoadUint32(&w.noempty) == 0 {
 		w.commit(uncles, nil, false, tstart)
 	}
 
+	// task4：从交易池pending列表中向区块中添加可用的交易
 	// Fill the block with all available pending transactions.
 	pending, err := w.eth.TxPool().Pending()
 	if err != nil {
 		log.Error("Failed to fetch pending transactions", "err", err)
 		return
 	}
+
+	// 如果没有可用的交易，更新一下状态快照
 	// Short circuit if there is no available pending transactions.
 	// But if we disable empty precommit already, ignore it. Since
 	// empty block is necessary to keep the liveness of the network.
@@ -964,6 +988,8 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 		w.updateSnapshot()
 		return
 	}
+
+	// 将交易分为local和remote，分别执行commitTransaction，将交易执行并传入block
 	// Split the pending transactions into locals and remotes
 	localTxs, remoteTxs := make(map[common.Address]types.Transactions), pending
 	for _, account := range w.eth.TxPool().Locals() {
@@ -984,6 +1010,7 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 			return
 		}
 	}
+	// task5：计算挖矿奖励，更新block，将上面生成的block递交到一个挖矿task，最后将task传入taskCh通道
 	w.commit(uncles, w.fullTaskHook, true, tstart)
 }
 
@@ -993,6 +1020,7 @@ func (w *worker) commit(uncles []*types.Header, interval func(), update bool, st
 	// Deep copy receipts here to avoid interaction between different tasks.
 	receipts := copyReceipts(w.current.receipts)
 	s := w.current.state.Copy()
+	// 计算挖矿奖励（包括叔块奖励）
 	block, err := w.engine.FinalizeAndAssemble(w.chain, w.current.header, s, w.current.txs, uncles, receipts)
 	if err != nil {
 		return err
@@ -1002,6 +1030,7 @@ func (w *worker) commit(uncles []*types.Header, interval func(), update bool, st
 			interval()
 		}
 		select {
+		// 生成task，传入taskCh通道
 		case w.taskCh <- &task{receipts: receipts, state: s, block: block, createdAt: time.Now()}:
 			w.unconfirmed.Shift(block.NumberU64() - 1)
 			log.Info("Commit new mining work", "number", block.Number(), "sealhash", w.engine.SealHash(block.Header()),
